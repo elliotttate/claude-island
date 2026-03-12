@@ -26,6 +26,8 @@ struct ChatView: View {
     @State private var previousHistoryCount: Int = 0
     @State private var isBottomVisible: Bool = true
     @FocusState private var isInputFocused: Bool
+    @ObservedObject private var speechRecognizer = SpeechRecognizer.shared
+    @ObservedObject private var anthropicSTT = AnthropicSpeechRecognizer.shared
 
     init(sessionId: String, initialSession: SessionState, sessionMonitor: ClaudeSessionMonitor, viewModel: NotchViewModel) {
         self.sessionId = sessionId
@@ -360,7 +362,8 @@ struct ChatView: View {
     }
 
     private var inputBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
+            // Text field with rounded background
             TextField(canSendMessages ? "Message Claude..." : "Connecting to remote-control...", text: $inputText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
@@ -374,19 +377,37 @@ struct ChatView: View {
                         .fill(Color.white.opacity(canSendMessages ? 0.08 : 0.04))
                         .overlay(
                             RoundedRectangle(cornerRadius: 20)
-                                .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                                .strokeBorder(isAnyListening ? Color.red.opacity(0.5) : Color.white.opacity(0.1), lineWidth: 1)
                         )
                 )
                 .onChange(of: inputText) { _, newValue in
                     DebugFileLogger.log("inputText changed to: '\(newValue)' (length=\(newValue.count))")
+                }
+                .onChange(of: speechRecognizer.transcript) { _, newValue in
+                    if speechRecognizer.isListening && !newValue.isEmpty {
+                        inputText = newValue
+                    }
+                }
+                .onChange(of: anthropicSTT.transcript) { _, newValue in
+                    if anthropicSTT.isListening && !newValue.isEmpty {
+                        inputText = newValue
+                    }
                 }
                 .onSubmit {
                     DebugFileLogger.log("onSubmit fired, inputText='\(inputText)'")
                     sendMessage()
                 }
 
+            // Microphone button
+            micButton
+
+            // Send button
             Button {
                 DebugFileLogger.log("send button tapped, inputText='\(inputText)'")
+                if isAnyListening {
+                    speechRecognizer.stopListening()
+                    anthropicSTT.stopListening()
+                }
                 sendMessage()
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
@@ -413,6 +434,49 @@ struct ChatView: View {
         .onAppear {
             DebugFileLogger.log("inputBar appeared, canSendMessages=\(canSendMessages), isInputFocused=\(isInputFocused)")
         }
+    }
+
+    // MARK: - Microphone Button
+
+    private var isAnyListening: Bool {
+        speechRecognizer.isListening || anthropicSTT.isListening
+    }
+
+    private var isAnyMicDenied: Bool {
+        speechRecognizer.micDenied || anthropicSTT.micDenied
+    }
+
+    private var micButton: some View {
+        Button(action: {
+            DebugFileLogger.log("mic button tapped, useAnthropicSTT=\(AppSettings.useAnthropicSTT)")
+            if isAnyListening {
+                speechRecognizer.stopListening()
+                anthropicSTT.stopListening()
+            } else if AppSettings.useAnthropicSTT {
+                anthropicSTT.startListening()
+            } else {
+                speechRecognizer.startListening()
+            }
+        }) {
+            Image(systemName: micIcon)
+                .font(.system(size: 14))
+                .foregroundColor(micColor)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var micIcon: String {
+        if isAnyListening { return "mic.fill" }
+        if isAnyMicDenied { return "mic.slash" }
+        return "mic"
+    }
+
+    private var micColor: Color {
+        if isAnyListening { return .red }
+        if isAnyMicDenied { return .red.opacity(0.5) }
+        return .white.opacity(0.5)
     }
 
     // MARK: - Approval Bar
@@ -528,7 +592,7 @@ struct MessageItemView: View {
         case .user(let text):
             UserMessageView(text: text)
         case .assistant(let text):
-            AssistantMessageView(text: text)
+            AssistantMessageView(text: text, messageId: item.id)
         case .toolCall(let tool):
             ToolCallView(tool: tool, sessionId: sessionId)
         case .thinking(let text):
@@ -563,6 +627,10 @@ struct UserMessageView: View {
 
 struct AssistantMessageView: View {
     let text: String
+    var messageId: String? = nil
+
+    @ObservedObject private var speechManager = SpeechManager.shared
+    @State private var isHovered = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
@@ -574,8 +642,27 @@ struct AssistantMessageView: View {
 
             MarkdownText(text, color: .white.opacity(0.9), fontSize: 13)
 
-            Spacer(minLength: 60)
+            Spacer(minLength: 20)
+
+            // Speaker button — always present to avoid layout shift, opacity for visibility
+            Button {
+                if speechManager.isSpeaking {
+                    speechManager.stop()
+                } else {
+                    speechManager.speak(text, messageId: nil, force: true)
+                }
+            } label: {
+                Image(systemName: speechManager.isSpeaking ? "stop.fill" : "speaker.wave.2")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.4))
+                    .frame(width: 20, height: 20)
+            }
+            .buttonStyle(.plain)
+            .opacity(isHovered || speechManager.isSpeaking ? 1 : 0)
+            .animation(.easeInOut(duration: 0.15), value: isHovered)
         }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
     }
 }
 

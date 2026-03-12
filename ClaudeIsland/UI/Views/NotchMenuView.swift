@@ -21,6 +21,8 @@ struct NotchMenuView: View {
     @ObservedObject private var loginManager = OAuthLoginManager.shared
     @State private var hooksInstalled: Bool = false
     @State private var launchAtLogin: Bool = false
+    @State private var readAloudEnabled: Bool = AppSettings.readAloudEnabled
+    @State private var useAnthropicSTT: Bool = AppSettings.useAnthropicSTT
 
     var body: some View {
         VStack(spacing: 4) {
@@ -39,6 +41,16 @@ struct NotchMenuView: View {
             // Appearance settings
             ScreenPickerRow(screenSelector: screenSelector)
             SoundPickerRow(soundSelector: soundSelector)
+            VoicePickerRow(isEnabled: $readAloudEnabled)
+
+            MenuToggleRow(
+                icon: "waveform",
+                label: "Claude Voice Input",
+                isOn: useAnthropicSTT
+            ) {
+                useAnthropicSTT.toggle()
+                AppSettings.useAnthropicSTT = useAnthropicSTT
+            }
 
             Divider()
                 .background(Color.white.opacity(0.08))
@@ -125,6 +137,8 @@ struct NotchMenuView: View {
     private func refreshStates() {
         hooksInstalled = HookInstaller.isInstalled()
         launchAtLogin = SMAppService.mainApp.status == .enabled
+        readAloudEnabled = AppSettings.readAloudEnabled
+        useAnthropicSTT = AppSettings.useAnthropicSTT
         screenSelector.refreshScreens()
         loginManager.checkCredentials()
     }

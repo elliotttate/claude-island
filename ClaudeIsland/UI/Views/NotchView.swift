@@ -464,6 +464,20 @@ struct NotchView: View {
                 }
             }
 
+            // Read aloud the last assistant message if enabled
+            if AppSettings.readAloudEnabled {
+                for session in newlyWaitingSessions {
+                    let items = ChatHistoryManager.shared.history(for: session.sessionId)
+                    // Find the last assistant message
+                    if let lastAssistant = items.last(where: {
+                        if case .assistant = $0.type { return true }
+                        return false
+                    }), case .assistant(let text) = lastAssistant.type {
+                        SpeechManager.shared.speak(text, messageId: lastAssistant.id)
+                    }
+                }
+            }
+
             // Trigger bounce animation to get user's attention
             DispatchQueue.main.async {
                 isBouncing = true
