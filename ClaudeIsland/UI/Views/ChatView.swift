@@ -6,6 +6,7 @@
 //
 
 import Combine
+import os.log
 import SwiftUI
 
 struct ChatView: View {
@@ -160,7 +161,7 @@ struct ChatView: View {
             }
         }
         .onChange(of: canSendMessages) { _, canSend in
-            // Auto-focus input when tmux messaging becomes available
+            // Auto-focus input when messaging becomes available
             if canSend && !isInputFocused {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     isInputFocused = true
@@ -168,7 +169,7 @@ struct ChatView: View {
             }
         }
         .onAppear {
-            // Auto-focus input when chat opens and tmux messaging is available
+            // Auto-focus input when chat opens and messaging is available
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 if canSendMessages {
                     isInputFocused = true
@@ -353,14 +354,14 @@ struct ChatView: View {
 
     // MARK: - Input Bar
 
-    /// Can send messages only if session is in tmux
+    /// Can send messages if remote-control bridge is available
     private var canSendMessages: Bool {
-        session.isInTmux && session.tty != nil
+        session.canSendMessages
     }
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            TextField(canSendMessages ? "Message Claude..." : "Open Claude Code in tmux to enable messaging", text: $inputText)
+            TextField(canSendMessages ? "Message Claude..." : "Connecting to remote-control...", text: $inputText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .foregroundColor(canSendMessages ? .white : .white.opacity(0.4))
@@ -376,11 +377,16 @@ struct ChatView: View {
                                 .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
                         )
                 )
+                .onChange(of: inputText) { _, newValue in
+                    DebugFileLogger.log("inputText changed to: '\(newValue)' (length=\(newValue.count))")
+                }
                 .onSubmit {
+                    DebugFileLogger.log("onSubmit fired, inputText='\(inputText)'")
                     sendMessage()
                 }
 
             Button {
+                DebugFileLogger.log("send button tapped, inputText='\(inputText)'")
                 sendMessage()
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
@@ -404,6 +410,9 @@ struct ChatView: View {
             .allowsHitTesting(false)
         }
         .zIndex(1) // Render above message list
+        .onAppear {
+            DebugFileLogger.log("inputBar appeared, canSendMessages=\(canSendMessages), isInputFocused=\(isInputFocused)")
+        }
     }
 
     // MARK: - Approval Bar
@@ -422,7 +431,6 @@ struct ChatView: View {
     /// Bar for interactive tools like AskUserQuestion that need terminal input
     private var interactivePromptBar: some View {
         ChatInteractivePromptBar(
-            isInTmux: session.isInTmux,
             onGoToTerminal: { focusTerminal() }
         )
     }
@@ -462,9 +470,18 @@ struct ChatView: View {
         sessionMonitor.denyPermission(sessionId: sessionId, reason: nil)
     }
 
+    private static let logger = Logger(subsystem: "com.claudeisland", category: "ChatView")
+
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        DebugFileLogger.log("sendMessage called, text='\(text)', isEmpty=\(text.isEmpty)")
+        guard !text.isEmpty else {
+            DebugFileLogger.log("sendMessage: text is empty, ignoring")
+            return
+        }
+
+        DebugFileLogger.log("sendMessage: sending '\(text.prefix(50))' to session \(session.sessionId.prefix(8))")
+        DebugFileLogger.log("sendMessage: canSendMessages=\(session.canSendMessages), sessionId=\(session.sessionId), cwd=\(session.cwd)")
 
         inputText = ""
 
@@ -479,42 +496,24 @@ struct ChatView: View {
     }
 
     private func sendToSession(_ text: String) async {
-        guard session.isInTmux else { return }
-        guard let tty = session.tty else { return }
-
-        if let target = await findTmuxTarget(tty: tty) {
-            _ = await ToolApprovalHandler.shared.sendMessage(text, to: target)
-        }
-    }
-
-    private func findTmuxTarget(tty: String) async -> TmuxTarget? {
-        guard let tmuxPath = await TmuxPathFinder.shared.getTmuxPath() else {
-            return nil
+        DebugFileLogger.log("sendToSession: canSendMessages=\(session.canSendMessages)")
+        guard session.canSendMessages else {
+            DebugFileLogger.log("sendToSession: canSendMessages is false, ABORTING")
+            return
         }
 
-        do {
-            let output = try await ProcessExecutor.shared.run(
-                tmuxPath,
-                arguments: ["list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_tty}"]
-            )
+        DebugFileLogger.log("sendToSession: calling RemoteControlManager.sendMessage(text='\(text.prefix(50))', sessionId=\(session.sessionId), tty=\(session.tty ?? "nil"))")
+        let success = await RemoteControlManager.shared.sendMessage(
+            text,
+            sessionId: session.sessionId,
+            cwd: session.cwd,
+            tty: session.tty
+        )
 
-            let lines = output.components(separatedBy: "\n")
-            for line in lines {
-                let parts = line.components(separatedBy: " ")
-                guard parts.count >= 2 else { continue }
-
-                let target = parts[0]
-                let paneTty = parts[1].replacingOccurrences(of: "/dev/", with: "")
-
-                if paneTty == tty {
-                    return TmuxTarget(from: target)
-                }
-            }
-        } catch {
-            return nil
+        DebugFileLogger.log("sendToSession: result=\(success)")
+        if !success {
+            DebugFileLogger.log("sendToSession: message send FAILED")
         }
-
-        return nil
     }
 }
 
@@ -983,7 +982,6 @@ struct InterruptedMessageView: View {
 
 /// Bar for interactive tools like AskUserQuestion that need terminal input
 struct ChatInteractivePromptBar: View {
-    let isInTmux: Bool
     let onGoToTerminal: () -> Void
 
     @State private var showContent = false
@@ -1008,9 +1006,7 @@ struct ChatInteractivePromptBar: View {
 
             // Terminal button on right (similar to Allow button)
             Button {
-                if isInTmux {
-                    onGoToTerminal()
-                }
+                onGoToTerminal()
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "terminal")
@@ -1018,10 +1014,10 @@ struct ChatInteractivePromptBar: View {
                     Text("Terminal")
                         .font(.system(size: 13, weight: .medium))
                 }
-                .foregroundColor(isInTmux ? .black : .white.opacity(0.4))
+                .foregroundColor(.black)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(isInTmux ? Color.white.opacity(0.95) : Color.white.opacity(0.1))
+                .background(Color.white.opacity(0.95))
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)

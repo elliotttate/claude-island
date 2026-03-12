@@ -31,6 +31,9 @@ class ClaudeSessionMonitor: ObservableObject {
     // MARK: - Monitoring Lifecycle
 
     func startMonitoring() {
+        // Check OAuth login state (non-blocking, doesn't depend on bridge)
+        OAuthLoginManager.shared.checkCredentials()
+
         HookSocketServer.shared.start(
             onEvent: { event in
                 Task {
