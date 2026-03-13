@@ -2,13 +2,28 @@
 //  SpeechManager.swift
 //  ClaudeIsland
 //
-//  Text-to-speech using macOS AVSpeechSynthesizer
+//  Text-to-speech using macOS `say` command for access to all system voices
 //
 
-import AVFoundation
 import Combine
 import Foundation
 import os.log
+
+/// A voice available via the macOS `say` command
+struct SayVoice: Identifiable, Hashable {
+    let name: String
+    let language: String
+    var id: String { name }
+
+    /// Whether this is the Siri voice
+    var isSiri: Bool { name.hasPrefix("Voice") }
+
+    /// Display name (show "Siri" instead of "Voice 4")
+    var displayName: String {
+        if isSiri { return "Siri (\(name))" }
+        return name
+    }
+}
 
 @MainActor
 class SpeechManager: NSObject, ObservableObject {
@@ -16,15 +31,16 @@ class SpeechManager: NSObject, ObservableObject {
 
     private static let logger = Logger(subsystem: "com.claudeisland", category: "Speech")
 
-    private let synthesizer = AVSpeechSynthesizer()
     @Published private(set) var isSpeaking: Bool = false
 
     /// Track the last spoken message ID to avoid repeats
     private var lastSpokenMessageId: String?
 
+    /// The currently running `say` process
+    private var sayProcess: Process?
+
     private override init() {
         super.init()
-        synthesizer.delegate = self
     }
 
     // MARK: - Public API
@@ -39,52 +55,115 @@ class SpeechManager: NSObject, ObservableObject {
         guard force || AppSettings.readAloudEnabled else { return }
 
         // Stop any current speech
-        if synthesizer.isSpeaking {
-            synthesizer.stopSpeaking(at: .immediate)
-        }
+        stop()
 
         // Strip markdown formatting for cleaner speech
         let cleanText = stripMarkdown(text)
         guard !cleanText.isEmpty else { return }
 
-        let utterance = AVSpeechUtterance(string: cleanText)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-        utterance.pitchMultiplier = 1.0
-        utterance.volume = 1.0
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
 
-        // Use the selected voice, or system default
-        if let voiceId = AppSettings.selectedVoiceId,
-           let voice = AVSpeechSynthesisVoice(identifier: voiceId) {
-            utterance.voice = voice
-        } else {
-            // Default to a good English voice
-            utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        var args: [String] = []
+        if let voiceName = AppSettings.selectedVoiceId, !voiceName.isEmpty {
+            args += ["-v", voiceName]
+        }
+        args.append(cleanText)
+        process.arguments = args
+
+        // Track completion
+        process.terminationHandler = { [weak self] proc in
+            Task { @MainActor [weak self] in
+                // Only clear if this is still our active process
+                if self?.sayProcess === proc {
+                    self?.isSpeaking = false
+                    self?.sayProcess = nil
+                }
+            }
         }
 
-        isSpeaking = true
-        synthesizer.speak(utterance)
-        Self.logger.debug("Speaking text (\(cleanText.count) chars)")
+        do {
+            isSpeaking = true
+            sayProcess = process
+            try process.run()
+            Self.logger.debug("Speaking text (\(cleanText.count) chars) with say command")
+        } catch {
+            Self.logger.error("Failed to launch say: \(error.localizedDescription)")
+            isSpeaking = false
+            sayProcess = nil
+        }
     }
 
     /// Stop speaking immediately
     func stop() {
-        if synthesizer.isSpeaking {
-            synthesizer.stopSpeaking(at: .immediate)
+        if let process = sayProcess, process.isRunning {
+            process.terminate()
         }
+        sayProcess = nil
         isSpeaking = false
     }
 
-    /// Available voices for the current locale
-    static var availableVoices: [AVSpeechSynthesisVoice] {
-        AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language.hasPrefix("en") }
-            .sorted { a, b in
-                // Premium/enhanced voices first, then by name
-                if a.quality != b.quality {
-                    return a.quality.rawValue > b.quality.rawValue
+    /// Available English voices from the `say` command
+    /// Filters out novelty/joke voices and sorts Siri first, then natural voices
+    static var availableVoices: [SayVoice] {
+        let noveltyNames: Set<String> = [
+            "Albert", "Bad News", "Bahh", "Bells", "Boing", "Bubbles",
+            "Cellos", "Good News", "Jester", "Organ", "Superstar",
+            "Trinoids", "Whisper", "Wobble", "Zarvox"
+        ]
+
+        var voices: [SayVoice] = []
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        process.arguments = ["-v", "?"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else { return voices }
+
+            for line in output.components(separatedBy: "\n") {
+                guard !line.isEmpty else { continue }
+                // Format: "Name                lang    # description"
+                // The name ends where the language code begins (xx_XX pattern)
+                guard let langRange = line.range(of: #"[a-z]{2}_[A-Z]{2}"#, options: .regularExpression) else {
+                    continue
                 }
-                return a.name < b.name
+
+                let name = line[line.startIndex..<langRange.lowerBound]
+                    .trimmingCharacters(in: .whitespaces)
+                let lang = String(line[langRange])
+
+                // Only English voices
+                guard lang.hasPrefix("en") else { continue }
+
+                // Skip novelty voices (check base name without locale qualifier)
+                let baseName = name.components(separatedBy: " (").first ?? name
+                if noveltyNames.contains(baseName) { continue }
+
+                voices.append(SayVoice(name: name, language: lang))
             }
+        } catch {
+            // Fallback: return a minimal set
+            voices = [
+                SayVoice(name: "Samantha", language: "en_US"),
+                SayVoice(name: "Voice 4", language: "en_US"),
+            ]
+        }
+
+        // Sort: Siri voices first, then alphabetical
+        voices.sort { a, b in
+            if a.isSiri != b.isSiri { return a.isSiri }
+            return a.name < b.name
+        }
+
+        return voices
     }
 
     // MARK: - Markdown Stripping
@@ -142,21 +221,5 @@ class SpeechManager: NSObject, ObservableObject {
         )
 
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-// MARK: - AVSpeechSynthesizerDelegate
-
-extension SpeechManager: AVSpeechSynthesizerDelegate {
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            isSpeaking = false
-        }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            isSpeaking = false
-        }
     }
 }

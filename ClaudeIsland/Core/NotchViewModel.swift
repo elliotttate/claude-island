@@ -76,7 +76,7 @@ class NotchViewModel: ObservableObject {
             // Base 500 accounts for header row (~37px) + all menu items
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: 500 + screenSelector.expandedPickerHeight + soundSelector.expandedPickerHeight + voiceSelector.expandedPickerHeight
+                height: 540 + screenSelector.expandedPickerHeight + soundSelector.expandedPickerHeight + voiceSelector.expandedPickerHeight
             )
         case .instances:
             return CGSize(

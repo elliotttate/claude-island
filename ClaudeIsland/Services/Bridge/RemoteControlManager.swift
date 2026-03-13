@@ -54,14 +54,21 @@ actor RemoteControlManager {
     func sendMessage(_ text: String, sessionId: String, cwd: String, tty: String? = nil) async -> Bool {
         DebugFileLogger.log("sendMessage ENTER: text='\(text.prefix(50))', sessionId=\(sessionId), cwd=\(cwd)")
 
-        // Look up the cloud session ID from bridge-pointer.json
-        let pointer = loadBridgePointer(forCwd: cwd)
-        guard let pointer = pointer else {
-            DebugFileLogger.log("sendMessage: no bridge-pointer.json found — is remote control enabled? (/remote-control)")
-            return false
+        // Determine cloud session ID
+        let cloudSessionId: String
+        if sessionId.hasPrefix("remote-") {
+            // Remote API session — cloud ID is embedded in the session ID
+            cloudSessionId = String(sessionId.dropFirst("remote-".count))
+            DebugFileLogger.log("sendMessage: remote session, cloudSessionId=\(cloudSessionId)")
+        } else {
+            // Local session — look up cloud ID from bridge-pointer.json
+            guard let pointer = loadBridgePointer(forCwd: cwd) else {
+                DebugFileLogger.log("sendMessage: no bridge-pointer.json found — is remote control enabled? (/remote-control)")
+                return false
+            }
+            cloudSessionId = pointer.sessionId
+            DebugFileLogger.log("sendMessage: local session, cloudSessionId=\(cloudSessionId)")
         }
-
-        DebugFileLogger.log("sendMessage: cloud sessionId=\(pointer.sessionId)")
 
         // Ensure we have credentials
         if !hasCredentials {
@@ -76,7 +83,7 @@ actor RemoteControlManager {
         let event: [String: Any] = [
             "type": "user",
             "uuid": uuid,
-            "session_id": pointer.sessionId,
+            "session_id": cloudSessionId,
             "parent_tool_use_id": NSNull(),
             "message": [
                 "role": "user",
@@ -86,7 +93,7 @@ actor RemoteControlManager {
 
         do {
             try await AnthropicBridgeClient.shared.sendEvents(
-                sessionId: pointer.sessionId,
+                sessionId: cloudSessionId,
                 events: [event]
             )
             DebugFileLogger.log("sendMessage: SUCCESS")

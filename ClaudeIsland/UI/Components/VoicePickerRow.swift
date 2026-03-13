@@ -5,7 +5,6 @@
 //  Voice selection for read-aloud TTS feature
 //
 
-import AVFoundation
 import SwiftUI
 
 struct VoicePickerRow: View {
@@ -25,9 +24,9 @@ struct VoicePickerRow: View {
     }
 
     private var selectedVoiceName: String {
-        if let id = selectedVoiceId,
-           let voice = voices.first(where: { $0.identifier == id }) {
-            return voice.name
+        if let name = selectedVoiceId,
+           let voice = voices.first(where: { $0.name == name }) {
+            return voice.displayName
         }
         return "Default"
     }
@@ -92,7 +91,7 @@ struct VoicePickerRow: View {
                     // Disable option
                     VoiceOptionRow(
                         name: "Disable",
-                        quality: nil,
+                        badge: nil,
                         isSelected: false,
                         isDisableRow: true
                     ) {
@@ -113,7 +112,7 @@ struct VoicePickerRow: View {
                         VStack(spacing: 2) {
                             VoiceOptionRow(
                                 name: "Default",
-                                quality: nil,
+                                badge: nil,
                                 isSelected: selectedVoiceId == nil
                             ) {
                                 selectedVoiceId = nil
@@ -121,15 +120,15 @@ struct VoicePickerRow: View {
                                 previewVoice(nil)
                             }
 
-                            ForEach(voices, id: \.identifier) { voice in
+                            ForEach(voices) { voice in
                                 VoiceOptionRow(
-                                    name: voice.name,
-                                    quality: voiceQualityLabel(voice.quality),
-                                    isSelected: selectedVoiceId == voice.identifier
+                                    name: voice.displayName,
+                                    badge: voice.isSiri ? "Siri" : nil,
+                                    isSelected: selectedVoiceId == voice.name
                                 ) {
-                                    selectedVoiceId = voice.identifier
-                                    AppSettings.selectedVoiceId = voice.identifier
-                                    previewVoice(voice.identifier)
+                                    selectedVoiceId = voice.name
+                                    AppSettings.selectedVoiceId = voice.name
+                                    previewVoice(voice.name)
                                 }
                             }
                         }
@@ -149,17 +148,9 @@ struct VoicePickerRow: View {
         .white.opacity(isHovered ? 1.0 : 0.7)
     }
 
-    private func voiceQualityLabel(_ quality: AVSpeechSynthesisVoiceQuality) -> String? {
-        switch quality {
-        case .premium: return "Premium"
-        case .enhanced: return "Enhanced"
-        default: return nil
-        }
-    }
-
-    private func previewVoice(_ voiceId: String?) {
-        AppSettings.selectedVoiceId = voiceId
-        SpeechManager.shared.speak("Hello, I'm Claude.", messageId: nil)
+    private func previewVoice(_ voiceName: String?) {
+        AppSettings.selectedVoiceId = voiceName
+        SpeechManager.shared.speak("Hello, I'm Claude.", messageId: nil, force: true)
     }
 }
 
@@ -167,7 +158,7 @@ struct VoicePickerRow: View {
 
 private struct VoiceOptionRow: View {
     let name: String
-    let quality: String?
+    let badge: String?
     let isSelected: Bool
     var isDisableRow: Bool = false
     let action: () -> Void
@@ -185,8 +176,8 @@ private struct VoiceOptionRow: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(isDisableRow ? Color.white.opacity(0.5) : Color.white.opacity(isHovered ? 1.0 : 0.7))
 
-                if let quality {
-                    Text(quality)
+                if let badge {
+                    Text(badge)
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(TerminalColors.blue.opacity(0.8))
                         .padding(.horizontal, 4)

@@ -162,6 +162,21 @@ actor AnthropicBridgeClient {
         DebugFileLogger.log("sendEvents: SUCCESS")
     }
 
+    /// Rename a session (PATCH title to cloud API)
+    func renameSession(_ sessionId: String, title: String) async throws {
+        DebugFileLogger.log("renameSession: sessionId=\(sessionId), title='\(title)'")
+        let creds = try loadCredentials()
+
+        try await patch(
+            path: "/v1/sessions/\(sessionId)",
+            body: ["title": title],
+            token: creds.accessToken,
+            orgId: creds.organizationId
+        )
+
+        DebugFileLogger.log("renameSession: SUCCESS")
+    }
+
     /// Send a user message to a session
     func sendUserMessage(_ text: String, sessionId: String) async throws {
         DebugFileLogger.log("sendUserMessage: text='\(text.prefix(50))' sessionId=\(sessionId)")
@@ -286,6 +301,13 @@ actor AnthropicBridgeClient {
     private func get(path: String, token: String, orgId: String?) async throws -> Data {
         DebugFileLogger.log("HTTP GET \(path)")
         let request = try buildRequest(method: "GET", path: path, token: token, orgId: orgId)
+        return try await execute(request)
+    }
+
+    @discardableResult
+    private func patch(path: String, body: [String: Any], token: String, orgId: String?) async throws -> Data {
+        DebugFileLogger.log("HTTP PATCH \(path)")
+        let request = try buildRequest(method: "PATCH", path: path, token: token, orgId: orgId, body: body)
         return try await execute(request)
     }
 
